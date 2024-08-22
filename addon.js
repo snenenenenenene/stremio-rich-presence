@@ -38,6 +38,7 @@ const manifest = {
     description: "Addon that updates Discord status with the current stream from Stremio.",
     resources: ["meta", "subtitles"], // Removed "catalog" and "stream", focusing on passive DCRP
     types: ["movie", "series", "channel"], // Added "channel" to handle YouTube and similar content
+    logo: "/assets/discord-logo.png",
     catalogs: [], // Empty array to satisfy the requirement
     idPrefixes: ["tt", "yt"] // Added "yt" for YouTube and other online content
 };
