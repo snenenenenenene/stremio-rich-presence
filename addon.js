@@ -273,6 +273,6 @@ async function fetchMetadata(id) {
 
 module.exports = builder.getInterface();
 
-serveHTTP(builder.getInterface(), { port: 4000 });
+serveHTTP(builder.getInterface(), { port: process.env.PORT || 4000 });
 
-console.log(`Stremio Discord Presence Addon is running on port 4000`);
+console.log(`Stremio Discord Presence Addon is running on port ${process.env.PORT || 4000}`);
