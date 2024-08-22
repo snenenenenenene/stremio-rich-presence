@@ -1,6 +1,9 @@
-const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
+const { addonBuilder, serveHTTP, publishToCentral } = require("stremio-addon-sdk");
 const { Client } = require('discord-rpc');
 const axios = require('axios');
+
+publishToCentral('https://4daa2bdba2f6-stremio-rich-presence.baby-beamup.club/manifest.json')
+
 
 const clientId = process.env.DISCORD_CLIENT_ID;
 const tmdbApiKey = process.env.TMBD_API_KEY;
