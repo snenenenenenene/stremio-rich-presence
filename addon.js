@@ -279,4 +279,4 @@ serveHTTP(builder.getInterface(), { port: process.env.PORT || 4000 });
 
 console.log(`Stremio Discord Presence Addon is running on port ${process.env.PORT || 4000}`);
 
-publishToCentral('https://4daa2bdba2f6-stremio-rich-presence.baby-beamup.club/manifest.json')
+// publishToCentral('https://4daa2bdba2f6-stremio-rich-presence.baby-beamup.club/manifest.json')
