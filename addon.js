@@ -1,6 +1,5 @@
 require('dotenv').config();
 const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
-const { Client } = require('discord-rpc');
 const axios = require('axios');
 const fs = require('fs');
 const os = require('os');
@@ -9,11 +8,13 @@ const https = require('https');
 const clientId = process.env.DISCORD_CLIENT_ID;
 const tmdbApiKey = process.env.TMDB_API_KEY;
 const tmdbAccessToken = process.env.TMDB_ACCESS_TOKEN;
-
 const isRunningOnBeamUp = process.env.BEAMUP || os.hostname().includes('beamup');
 
 let rpc;
 if (!isRunningOnBeamUp) {
+    const { Client } = require('discord-rpc');
+    rpc = new Client({ transport: 'ipc' });
+
     const certOptions = {
         key: fs.readFileSync('./certs/server.key'),
         cert: fs.readFileSync('./certs/server.pem'),
@@ -27,8 +28,6 @@ if (!isRunningOnBeamUp) {
         console.log('HTTPS Server running at https://127-0-0-1.my.local-ip.co:8443');
     });
 
-    rpc = new Client({ transport: 'ipc' });
-
     rpc.on('ready', () => {
         console.log('Connected to Discord!');
         setDefaultActivity(); // Set the default activity when the addon starts
@@ -37,6 +36,8 @@ if (!isRunningOnBeamUp) {
     rpc.login({ clientId }).catch((error) => {
         console.error('Error connecting to Discord:', error);
     });
+} else {
+    console.log('Running on BeamUp, Discord RPC not initialized.');
 }
 
 const startTimestamp = Math.floor(Date.now() / 1000); // Store the start time when Stremio was opened
