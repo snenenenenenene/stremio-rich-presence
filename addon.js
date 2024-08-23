@@ -2,7 +2,6 @@ require('dotenv').config();
 const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const { Client } = require('discord-rpc');
 const axios = require('axios');
-const https = require('https');
 const fs = require('fs');
 
 const clientId = process.env.DISCORD_CLIENT_ID;
@@ -291,21 +290,3 @@ module.exports = builder.getInterface();
 serveHTTP(builder.getInterface(), { port: process.env.PORT || 4000 });
 
 console.log(`Stremio Discord Presence Addon is running on port ${process.env.PORT || 4000}`);
-
-// Reverse Proxy HTTPS Server
-if (runningLocally) {
-    const options = {
-        key: fs.readFileSync('./certs/server.key'),
-        cert: fs.readFileSync('./certs/server.pem'),
-        ca: fs.readFileSync('./certs/chain.pem')
-    };
-
-    const httpsServer = https.createServer(options, (req, res) => {
-        res.writeHead(200);
-        res.end('HTTPS Server for Discord Rich Presence\n');
-    });
-
-    httpsServer.listen(8443, () => {
-        console.log('HTTPS Server running at https://127-0-0-1.my.local-ip.co:8443');
-    });
-}
