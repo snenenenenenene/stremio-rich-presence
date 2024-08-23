@@ -1,11 +1,11 @@
-require('dotenv').config()
+require('dotenv').config();
 const { addonBuilder, serveHTTP, publishToCentral } = require("stremio-addon-sdk");
 const { Client } = require('discord-rpc');
 const axios = require('axios');
 
 const clientId = process.env.DISCORD_CLIENT_ID;
-const tmdbApiKey = process.env.TMBD_API_KEY;
-const tmdbAccessToken = process.env.TMBD_ACCESS_TOKEN
+const tmdbApiKey = process.env.TMDB_API_KEY;
+const tmdbAccessToken = process.env.TMDB_ACCESS_TOKEN;
 
 const rpc = new Client({ transport: 'ipc' });
 const startTimestamp = Math.floor(Date.now() / 1000); // Store the start time when Stremio was opened
@@ -116,7 +116,7 @@ async function fetchSeriesData(imdbId, season, episode) {
 // Function to fetch YouTube video details
 async function fetchYouTubeDetails(videoId) {
     try {
-        const response = await axios.get(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${youtubeApiKey}`);
+        const response = await axios.get(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${process.env.YOUTUBE_API_KEY}`);
         if (response.data.items.length > 0) {
             const video = response.data.items[0].snippet;
             return {
