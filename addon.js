@@ -1,13 +1,44 @@
 require('dotenv').config();
-const { addonBuilder, serveHTTP, publishToCentral } = require("stremio-addon-sdk");
+const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const { Client } = require('discord-rpc');
 const axios = require('axios');
+const fs = require('fs');
+const os = require('os');
+const https = require('https');
 
 const clientId = process.env.DISCORD_CLIENT_ID;
 const tmdbApiKey = process.env.TMDB_API_KEY;
 const tmdbAccessToken = process.env.TMDB_ACCESS_TOKEN;
 
-const rpc = new Client({ transport: 'ipc' });
+const isRunningOnBeamUp = process.env.BEAMUP || os.hostname().includes('beamup');
+
+let rpc;
+if (!isRunningOnBeamUp) {
+    const certOptions = {
+        key: fs.readFileSync('./certs/server.key'),
+        cert: fs.readFileSync('./certs/server.pem'),
+        ca: fs.readFileSync('./certs/chain.pem')
+    };
+
+    const httpsServer = https.createServer(certOptions, (req, res) => {
+        res.writeHead(200);
+        res.end('Running Reverse Proxy for Discord RPC\n');
+    }).listen(8443, '0.0.0.0', () => {
+        console.log('HTTPS Server running at https://127-0-0-1.my.local-ip.co:8443');
+    });
+
+    rpc = new Client({ transport: 'ipc' });
+
+    rpc.on('ready', () => {
+        console.log('Connected to Discord!');
+        setDefaultActivity(); // Set the default activity when the addon starts
+    });
+
+    rpc.login({ clientId }).catch((error) => {
+        console.error('Error connecting to Discord:', error);
+    });
+}
+
 const startTimestamp = Math.floor(Date.now() / 1000); // Store the start time when Stremio was opened
 let resetActivityTimeout;
 
@@ -34,54 +65,90 @@ const manifest = {
     version: "1.0.0",
     name: "Discord Rich Presence Addon",
     description: "Addon that updates Discord status with the current stream from Stremio.",
-    resources: ["meta", "subtitles"], // Removed "catalog" and "stream", focusing on passive DCRP
-    types: ["movie", "series", "channel"], // Added "channel" to handle YouTube and similar content
+    resources: ["meta", "subtitles"],
+    types: ["movie", "series", "channel"],
     logo: "/assets/discord-logo.png",
-    catalogs: [], // Empty array to satisfy the requirement
-    idPrefixes: ["tt", "yt"] // Added "yt" for YouTube and other online content
+    catalogs: [],
+    idPrefixes: ["tt", "yt"]
 };
 
 const builder = new addonBuilder(manifest);
 
-// Connect to Discord
-rpc.on('ready', () => {
-    console.log('Connected to Discord!');
-    setDefaultActivity(); // Set the default activity when the addon starts
-});
+// Function to set the default activity
+function setDefaultActivity() {
+    const randomBrowsingPhrase = browsingPhrases[Math.floor(Math.random() * browsingPhrases.length)];
 
-rpc.login({ clientId }).catch(console.error);
-
-// Function to fetch image from TMDB using IMDb ID or from other sources for YouTube
-async function fetchImage(imdbId) {
-    if (imdbId.startsWith('yt')) {
-        return 'https://img.youtube.com/vi/' + imdbId.split(':')[1] + '/hqdefault.jpg'; // Use YouTube thumbnail
+    if (!isRunningOnBeamUp && rpc) {
+        rpc.setActivity({
+            details: 'Stremio is open',
+            state: randomBrowsingPhrase,
+            largeImageKey: 'https://play-lh.googleusercontent.com/k3489BQdgNeGZKMV8HIOMVZlMyY2EXkiWB0MN6yTl5omfd3_MCSCU75UTXqwh-7j-Qs',
+            largeImageText: 'Stremio',
+            startTimestamp: startTimestamp,
+            instance: false,
+        });
+        console.log(`Discord Rich Presence updated: ${randomBrowsingPhrase}`);
     } else {
-        try {
-            const tmdbUrl = `https://api.themoviedb.org/3/find/${imdbId}?external_source=imdb_id&api_key=${tmdbApiKey}`;
-            const response = await axios.get(tmdbUrl, {
-                headers: {
-                    Authorization: `Bearer ${tmdbAccessToken}`,
-                    accept: 'application/json'
-                }
-            });
+        console.log('Default activity not set: either running on BeamUp or RPC not initialized.');
+    }
+}
 
-            const movie = response.data.movie_results[0];
-            if (movie) {
-                const posterPath = movie.poster_path;
-                return `https://image.tmdb.org/t/p/w500${posterPath}`;
-            } else {
-                return null;
-            }
-        } catch (error) {
-            console.error(`Error fetching image for ${imdbId}:`, error);
-            return null;
+// Function to update Discord Rich Presence when playing content
+async function updatePlayActivity(id, stream) {
+    clearTimeout(resetActivityTimeout);
+
+    let largeImageKey = 'default_image_key';
+    let name = stream.name;
+    let stateText = '';
+
+    console.log(`Updating play activity for: ${id}, type: ${stream.type}`);
+
+    if (stream.type === 'series') {
+        const seriesData = await fetchSeriesData(id.split(':')[0], stream.season, stream.episode);
+        if (seriesData) {
+            largeImageKey = seriesData.poster || largeImageKey;
+            name = seriesData.name;
         }
+    } else if (stream.type === 'channel' && id.startsWith('yt')) {
+        const videoId = id.split(':')[1];
+        const youtubeDetails = await fetchYouTubeDetails(videoId);
+        if (youtubeDetails) {
+            largeImageKey = youtubeDetails.thumbnail;
+            name = youtubeDetails.title;
+            stateText = `by ${youtubeDetails.creator}`;
+        }
+    } else {
+        largeImageKey = await fetchImage(id) || largeImageKey;
+    }
+
+    const randomWatchingPhrase = watchingPhrases[Math.floor(Math.random() * watchingPhrases.length)];
+
+    if (!isRunningOnBeamUp && rpc) {
+        rpc.setActivity({
+            details: `${randomWatchingPhrase} ${name}`,
+            state: stateText || (stream.type === 'series' ? `S${stream.season}:E${stream.episode}` : undefined),
+            startTimestamp: startTimestamp,
+            largeImageKey: largeImageKey,
+            largeImageText: name,
+            smallImageKey: 'stremio_logo',
+            instance: false,
+        });
+
+        console.log(`Discord Rich Presence updated: ${randomWatchingPhrase} ${name} (${stream.type}) ${stateText || ''}`);
+        
+        resetActivityTimeout = setTimeout(() => {
+            setDefaultActivity();
+            console.log(`No activity detected for 30 seconds, resetting DCRP to default.`);
+        }, 30000); // 30 seconds timeout
+    } else {
+        console.log('Play activity not updated: either running on BeamUp or RPC not initialized.');
     }
 }
 
 // Function to fetch series episode image and name from TMDB
 async function fetchSeriesData(imdbId, season, episode) {
     try {
+        console.log(`Fetching series data for IMDb ID: ${imdbId}, Season: ${season}, Episode: ${episode}`);
         const tmdbUrl = `https://api.themoviedb.org/3/find/${imdbId}?external_source=imdb_id&api_key=${tmdbApiKey}`;
         const response = await axios.get(tmdbUrl, {
             headers: {
@@ -106,6 +173,8 @@ async function fetchSeriesData(imdbId, season, episode) {
                 name: `${series.name} - ${episodeData.name}`,
                 poster: episodeData.still_path ? `https://image.tmdb.org/t/p/w500${episodeData.still_path}` : `https://image.tmdb.org/t/p/w500${series.poster_path}`,
             };
+        } else {
+            console.log(`No series found for IMDb ID: ${imdbId}`);
         }
     } catch (error) {
         console.error(`Error fetching series data for ${imdbId}:`, error);
@@ -113,9 +182,40 @@ async function fetchSeriesData(imdbId, season, episode) {
     }
 }
 
+// Function to fetch image from TMDB using IMDb ID or from other sources for YouTube
+async function fetchImage(imdbId) {
+    if (imdbId.startsWith('yt')) {
+        return 'https://img.youtube.com/vi/' + imdbId.split(':')[1] + '/hqdefault.jpg'; // Use YouTube thumbnail
+    } else {
+        try {
+            console.log(`Fetching image for IMDb ID: ${imdbId}`);
+            const tmdbUrl = `https://api.themoviedb.org/3/find/${imdbId}?external_source=imdb_id&api_key=${tmdbApiKey}`;
+            const response = await axios.get(tmdbUrl, {
+                headers: {
+                    Authorization: `Bearer ${tmdbAccessToken}`,
+                    accept: 'application/json'
+                }
+            });
+
+            const movie = response.data.movie_results[0];
+            if (movie) {
+                const posterPath = movie.poster_path;
+                return `https://image.tmdb.org/t/p/w500${posterPath}`;
+            } else {
+                console.log(`No movie found for IMDb ID: ${imdbId}`);
+                return null;
+            }
+        } catch (error) {
+            console.error(`Error fetching image for ${imdbId}:`, error);
+            return null;
+        }
+    }
+}
+
 // Function to fetch YouTube video details
 async function fetchYouTubeDetails(videoId) {
     try {
+        console.log(`Fetching YouTube details for Video ID: ${videoId}`);
         const response = await axios.get(`https://www.googleapis.com/youtube/v3/videos?part=snippet&id=${videoId}&key=${process.env.YOUTUBE_API_KEY}`);
         if (response.data.items.length > 0) {
             const video = response.data.items[0].snippet;
@@ -124,6 +224,8 @@ async function fetchYouTubeDetails(videoId) {
                 creator: video.channelTitle,
                 thumbnail: video.thumbnails.high.url
             };
+        } else {
+            console.log(`No YouTube video found for Video ID: ${videoId}`);
         }
         return null;
     } catch (error) {
@@ -132,75 +234,16 @@ async function fetchYouTubeDetails(videoId) {
     }
 }
 
-// Function to set the default activity
-function setDefaultActivity() {
-    const randomBrowsingPhrase = browsingPhrases[Math.floor(Math.random() * browsingPhrases.length)];
-    
-    rpc.setActivity({
-        details: 'Stremio is open',
-        state: randomBrowsingPhrase,
-        largeImageKey: 'https://play-lh.googleusercontent.com/k3489BQdgNeGZKMV8HIOMVZlMyY2EXkiWB0MN6yTl5omfd3_MCSCU75UTXqwh-7j-Qs', // Stremio image provided
-        largeImageText: 'Stremio',
-        startTimestamp: startTimestamp, // Start time when Stremio was opened
-        instance: false,
-    });
-    console.log(`Discord Rich Presence updated: ${randomBrowsingPhrase}`);
-}
-
-// Function to update Discord Rich Presence when playing content
-async function updatePlayActivity(id, stream) {
-    clearTimeout(resetActivityTimeout); // Clear any existing timeout when playing starts
-
-    let largeImageKey = 'default_image_key'; // Default image key
-    let name = stream.name;
-    let stateText = '';
-
-    if (stream.type === 'series') {
-        const seriesData = await fetchSeriesData(id.split(':')[0], stream.season, stream.episode);
-        if (seriesData) {
-            largeImageKey = seriesData.poster || largeImageKey;
-            name = seriesData.name;
-        }
-    } else if (stream.type === 'channel' && id.startsWith('yt')) {
-        const videoId = id.split(':')[1];
-        const youtubeDetails = await fetchYouTubeDetails(videoId);
-        if (youtubeDetails) {
-            largeImageKey = youtubeDetails.thumbnail;
-            name = youtubeDetails.title;
-            stateText = `by ${youtubeDetails.creator}`;
-        }
-    } else {
-        largeImageKey = await fetchImage(id) || largeImageKey; // Fetch image for movies or channels
-    }
-
-    const randomWatchingPhrase = watchingPhrases[Math.floor(Math.random() * watchingPhrases.length)];
-
-    rpc.setActivity({
-        details: `${randomWatchingPhrase} ${name}`,
-        state: stateText || (stream.type === 'series' ? `S${stream.season}:E${stream.episode}` : undefined), // Show season/episode for series or creator for YouTube
-        startTimestamp: startTimestamp, // Show the total duration since Stremio was opened
-        largeImageKey: largeImageKey,
-        largeImageText: name,
-        smallImageKey: 'stremio_logo',
-        instance: false,
-    });
-
-    console.log(`Discord Rich Presence updated: ${randomWatchingPhrase} ${name} (${stream.type}) ${stateText || ''}`);
-
-    // Set a timeout to reset the activity after 30 seconds of inactivity
-    resetActivityTimeout = setTimeout(() => {
-        setDefaultActivity();
-        console.log(`No activity detected for 30 seconds, resetting DCRP to default.`);
-    }, 30000); // 30 seconds timeout
-}
-
 // Subtitle handler to detect when a stream is actually being watched
 builder.defineSubtitlesHandler(async function(args) {
     console.log(`Subtitle request received for: ${args.type} with id: ${args.id}`);
 
     const meta = await fetchMetadata(args.id);
     if (meta) {
+        console.log(`Updating Discord presence for: ${meta.name}`);
         await updatePlayActivity(args.id, meta);
+    } else {
+        console.log(`No metadata found for: ${args.id}`);
     }
 
     return Promise.resolve({ subtitles: [] });
@@ -212,7 +255,10 @@ builder.defineMetaHandler(async function(args) {
 
     const meta = await fetchMetadata(args.id);
     if (meta) {
+        console.log(`Updating Discord presence for: ${meta.name}`);
         await updatePlayActivity(args.id, meta);
+    } else {
+        console.log(`No metadata found for: ${args.id}`);
     }
 
     return Promise.resolve({ meta });
@@ -227,7 +273,7 @@ async function fetchMetadata(id) {
             return {
                 id: id,
                 name: youtubeDetails.title,
-                type: 'channel', // Treat it as a channel type
+                type: 'channel',
                 creator: youtubeDetails.creator,
                 thumbnail: youtubeDetails.thumbnail
             };
@@ -237,6 +283,7 @@ async function fetchMetadata(id) {
         const tmdbUrl = `https://api.themoviedb.org/3/find/${imdbId}?external_source=imdb_id&api_key=${tmdbApiKey}`;
 
         try {
+            console.log(`Fetching metadata for ID: ${id}`);
             const response = await axios.get(tmdbUrl, {
                 headers: {
                     Authorization: `Bearer ${tmdbAccessToken}`,
@@ -245,7 +292,6 @@ async function fetchMetadata(id) {
             });
 
             if (response.data.tv_results.length > 0 && season && episode) {
-                // Handle TV series episodes
                 const series = response.data.tv_results[0];
                 return {
                     id: id,
@@ -256,7 +302,6 @@ async function fetchMetadata(id) {
                     poster: series.poster_path ? `https://image.tmdb.org/t/p/w500${series.poster_path}` : null
                 };
             } else if (response.data.movie_results.length > 0) {
-                // Handle movies
                 const movie = response.data.movie_results[0];
                 return {
                     id: id,
@@ -264,6 +309,8 @@ async function fetchMetadata(id) {
                     type: "movie",
                     poster: movie.poster_path ? `https://image.tmdb.org/t/p/w500${movie.poster_path}` : null
                 };
+            } else {
+                console.log(`No matching movie or series found for IMDb ID: ${imdbId}`);
             }
         } catch (error) {
             console.error(`Error fetching metadata for ${id}:`, error);
@@ -278,5 +325,3 @@ module.exports = builder.getInterface();
 serveHTTP(builder.getInterface(), { port: process.env.PORT || 4000 });
 
 console.log(`Stremio Discord Presence Addon is running on port ${process.env.PORT || 4000}`);
-
-// publishToCentral('https://4daa2bdba2f6-stremio-rich-presence.baby-beamup.club/manifest.json')
