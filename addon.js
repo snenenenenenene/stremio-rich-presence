@@ -1,16 +1,17 @@
 require('dotenv').config();
-const { addonBuilder, serveHTTP, publishToCentral } = require("stremio-addon-sdk");
+const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 const { Client } = require('discord-rpc');
 const axios = require('axios');
-const fs = require('fs');
 const https = require('https');
+const fs = require('fs');
 
 const clientId = process.env.DISCORD_CLIENT_ID;
 const tmdbApiKey = process.env.TMDB_API_KEY;
 const tmdbAccessToken = process.env.TMDB_ACCESS_TOKEN;
+const runningLocally = process.env.RUNNING_LOCALLY === 'true';
 
 let rpc;
-const startTimestamp = Math.floor(Date.now() / 1000); // Store the start time when Stremio was opened
+let startTimestamp = Math.floor(Date.now() / 1000); // Store the start time when Stremio was opened
 let resetActivityTimeout;
 
 // Fun randomized phrases for browsing
@@ -31,6 +32,20 @@ const watchingPhrases = [
     'Watching the masterpiece:'
 ];
 
+// Discord RPC connection only if running locally
+if (runningLocally) {
+    rpc = new Client({ transport: 'ipc' });
+
+    rpc.on('ready', () => {
+        console.log('Connected to Discord!');
+        setDefaultActivity(); // Set the default activity when the addon starts
+    });
+
+    rpc.login({ clientId }).catch((error) => {
+        console.error('Error connecting to Discord:', error);
+    });
+}
+
 const manifest = {
     id: "org.stremio.discordpresence",
     version: "1.0.0",
@@ -44,21 +59,6 @@ const manifest = {
 };
 
 const builder = new addonBuilder(manifest);
-
-// Function to initialize Discord RPC client
-function initializeDiscordRpc() {
-    rpc = new Client({ transport: 'ipc' });
-
-    rpc.on('ready', () => {
-        console.log('Connected to Discord!');
-        setDefaultActivity(); // Set the default activity when the addon starts
-    });
-
-    rpc.login({ clientId }).catch(error => {
-        console.error('Error connecting to Discord:', error.message);
-        rpc = null; // Ensure RPC doesn't cause further issues if connection fails
-    });
-}
 
 // Function to fetch image from TMDB using IMDb ID or from other sources for YouTube
 async function fetchImage(imdbId) {
@@ -143,25 +143,23 @@ async function fetchYouTubeDetails(videoId) {
 
 // Function to set the default activity
 function setDefaultActivity() {
-    if (!rpc) return;
-
     const randomBrowsingPhrase = browsingPhrases[Math.floor(Math.random() * browsingPhrases.length)];
     
-    rpc.setActivity({
-        details: 'Stremio is open',
-        state: randomBrowsingPhrase,
-        largeImageKey: 'https://play-lh.googleusercontent.com/k3489BQdgNeGZKMV8HIOMVZlMyY2EXkiWB0MN6yTl5omfd3_MCSCU75UTXqwh-7j-Qs',
-        largeImageText: 'Stremio',
-        startTimestamp: startTimestamp,
-        instance: false,
-    });
-    console.log(`Discord Rich Presence updated: ${randomBrowsingPhrase}`);
+    if (runningLocally && rpc) {
+        rpc.setActivity({
+            details: 'Stremio is open',
+            state: randomBrowsingPhrase,
+            largeImageKey: 'https://play-lh.googleusercontent.com/k3489BQdgNeGZKMV8HIOMVZlMyY2EXkiWB0MN6yTl5omfd3_MCSCU75UTXqwh-7j-Qs', // Stremio image provided
+            largeImageText: 'Stremio',
+            startTimestamp: startTimestamp, // Start time when Stremio was opened
+            instance: false,
+        });
+        console.log(`Discord Rich Presence updated: ${randomBrowsingPhrase}`);
+    }
 }
 
 // Function to update Discord Rich Presence when playing content
 async function updatePlayActivity(id, stream) {
-    if (!rpc) return;
-
     clearTimeout(resetActivityTimeout); // Clear any existing timeout when playing starts
 
     let largeImageKey = 'default_image_key'; // Default image key
@@ -188,22 +186,25 @@ async function updatePlayActivity(id, stream) {
 
     const randomWatchingPhrase = watchingPhrases[Math.floor(Math.random() * watchingPhrases.length)];
 
-    rpc.setActivity({
-        details: `${randomWatchingPhrase} ${name}`,
-        state: stateText || (stream.type === 'series' ? `S${stream.season}:E${stream.episode}` : undefined),
-        startTimestamp: startTimestamp,
-        largeImageKey: largeImageKey,
-        largeImageText: name,
-        smallImageKey: 'stremio_logo',
-        instance: false,
-    });
+    if (runningLocally && rpc) {
+        rpc.setActivity({
+            details: `${randomWatchingPhrase} ${name}`,
+            state: stateText || (stream.type === 'series' ? `S${stream.season}:E${stream.episode}` : undefined), // Show season/episode for series or creator for YouTube
+            startTimestamp: startTimestamp, // Show the total duration since Stremio was opened
+            largeImageKey: largeImageKey,
+            largeImageText: name,
+            smallImageKey: 'stremio_logo',
+            instance: false,
+        });
 
-    console.log(`Discord Rich Presence updated: ${randomWatchingPhrase} ${name} (${stream.type}) ${stateText || ''}`);
+        console.log(`Discord Rich Presence updated: ${randomWatchingPhrase} ${name} (${stream.type}) ${stateText || ''}`);
 
-    resetActivityTimeout = setTimeout(() => {
-        setDefaultActivity();
-        console.log(`No activity detected for 30 seconds, resetting DCRP to default.`);
-    }, 30000);
+        // Set a timeout to reset the activity after 30 seconds of inactivity
+        resetActivityTimeout = setTimeout(() => {
+            setDefaultActivity();
+            console.log(`No activity detected for 30 seconds, resetting DCRP to default.`);
+        }, 30000); // 30 seconds timeout
+    }
 }
 
 // Subtitle handler to detect when a stream is actually being watched
@@ -239,7 +240,7 @@ async function fetchMetadata(id) {
             return {
                 id: id,
                 name: youtubeDetails.title,
-                type: 'channel',
+                type: 'channel', // Treat it as a channel type
                 creator: youtubeDetails.creator,
                 thumbnail: youtubeDetails.thumbnail
             };
@@ -257,6 +258,7 @@ async function fetchMetadata(id) {
             });
 
             if (response.data.tv_results.length > 0 && season && episode) {
+                // Handle TV series episodes
                 const series = response.data.tv_results[0];
                 return {
                     id: id,
@@ -267,6 +269,7 @@ async function fetchMetadata(id) {
                     poster: series.poster_path ? `https://image.tmdb.org/t/p/w500${series.poster_path}` : null
                 };
             } else if (response.data.movie_results.length > 0) {
+                // Handle movies
                 const movie = response.data.movie_results[0];
                 return {
                     id: id,
@@ -285,24 +288,24 @@ async function fetchMetadata(id) {
 
 module.exports = builder.getInterface();
 
-const httpPort = process.env.PORT || 4000;
-serveHTTP(builder.getInterface(), { port: httpPort });
+serveHTTP(builder.getInterface(), { port: process.env.PORT || 4000 });
 
-console.log(`Stremio Discord Presence Addon is running on port ${httpPort}`);
+console.log(`Stremio Discord Presence Addon is running on port ${process.env.PORT || 4000}`);
 
-// Setup HTTPS with local-ip.co
-const certFile = fs.readFileSync('./certs/server.pem');
-const keyFile = fs.readFileSync('./certs/server.key');
-const httpsServer = https.createServer({
-    key: keyFile,
-    cert: certFile
-});
+// Reverse Proxy HTTPS Server
+if (runningLocally) {
+    const options = {
+        key: fs.readFileSync('./certs/server.key'),
+        cert: fs.readFileSync('./certs/server.pem'),
+        ca: fs.readFileSync('./certs/chain.pem')
+    };
 
-httpsServer.listen(8443, () => {
-    console.log(`HTTPS Server running at https://127-0-0-1.my.local-ip.co:8443`);
-});
+    const httpsServer = https.createServer(options, (req, res) => {
+        res.writeHead(200);
+        res.end('HTTPS Server for Discord Rich Presence\n');
+    });
 
-// Conditionally initialize Discord RPC based on environment
-if (process.env.RUNNING_LOCALLY === 'true') {
-    initializeDiscordRpc();
+    httpsServer.listen(8443, () => {
+        console.log('HTTPS Server running at https://127-0-0-1.my.local-ip.co:8443');
+    });
 }
